@@ -1,78 +1,72 @@
-#!/bin/sh
+#!/usr/bin/env sh
+#
+# Convert Snap package to AppImage. Usage:
+#
+# $ ./snap2appimage.sh skype
+#
+SNAP_PACKAGE="${1}"
 
-APP=SAMPLE
+if [ -z "${SNAP_PACKAGE}" ]; then
+    echo "Usage: ./snap2appimage.sh snap-package-name"
+    exit 1
+fi
+
+create_temporary_folder() {
+    mkdir -p /tmp/snap2appimage && cd /tmp/snap2appimage || exit 1
+}
+
+download_appimagetool() {
+    if ! test -f ./appimagetool; then
+        wget https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
+        chmod a+x ./appimagetool
+    fi
+}
+
+download_snap_package() {
+    if ! test -f ./*.snap; then
+        wget "$(curl -H 'Snap-Device-Series: 16' http://api.snapcraft.io/v2/snaps/info/"${SNAP_PACKAGE}" --silent | sed 's/[()",{} ]/\n/g' | grep "^http" | head -1)"
+    fi
+}
+
+extract_snap_package() {
+    if ! test -d ./squashfs-root; then
+        unsquashfs -f ./*.snap
+    fi
+}
 
 # TEMPORARY DIRECTORY
 mkdir -p tmp
 cd ./tmp || exit 1
 
-# WGET VERSION USAGE
-_wget_version_usage() {
-	if wget --version | head -1 | grep -q ' 1.'; then
-		wget -q --show-progress "$@"
-	else
-		wget "$@"
-	fi
-}
-
 # DOWNLOAD APPIMAGETOOL
 if ! test -f ./appimagetool; then
-	_wget_version_usage https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
+	wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage -O appimagetool
 	chmod a+x ./appimagetool
 fi
 
 # DOWNLOAD THE SNAP PACKAGE
 if ! test -f ./*.snap; then
-	_wget_version_usage "$(curl -H 'Snap-Device-Series: 16' http://api.snapcraft.io/v2/snaps/info/"$APP" --silent | sed 's/[()",{} ]/\n/g' | grep "^http" | head -1)"
+	wget -q "$(curl -H 'Snap-Device-Series: 16' http://api.snapcraft.io/v2/snaps/info/skype --silent | sed 's/[()",{} ]/\n/g' | grep "^http" | head -1)"
 fi
 
-# EXTRACT THE SNAP PACKAGE
-if ! test -d ./squashfs-root; then
-	unsquashfs -f ./*.snap
-fi
+# EXTRACT THE SNAP PACKAGE AND CREATE THE APPIMAGE
+unsquashfs -f ./*.snap
+mkdir -p "${SNAP_PACKAGE}".AppDir
+VERSION=$(cat ./squashfs-root/*.yaml | grep "^version" | head -1 | cut -c 10-)
+mv ./squashfs-root/usr/share/skypeforlinux/* ./"${SNAP_PACKAGE}".AppDir/
+mv ./squashfs-root/usr/share/pixmaps/skypeforlinux.png ./"${SNAP_PACKAGE}".AppDir/
+mv ./squashfs-root/snap/gui/skypeforlinux.desktop ./"${SNAP_PACKAGE}".AppDir/
+sed -i 's#${SNAP}/meta/gui/skypeforlinux.png#skypeforlinux#g; s#Network;Application;##g' ./"${SNAP_PACKAGE}".AppDir/*.desktop
 
-# FIND PACKAGE VERSION
-VERSION=$(cat $(find . -name snapcraft.yaml | head -1) | grep "^version" | head -1 | cut -c 10- | sed 's/"//g; s/ /-/g')
-
-# CREATE THE APPDIR AND COMPILE THE APPIMAGE
-mkdir -p "$APP".AppDir
-rm -Rf ./"$APP".AppDir/*
-
-# FIND THE .DESKTOP FILE AND REPLACE THE "ICON" ENTRY
-cp -r "$(find . -name "$APP".desktop | head -1)" ./"$APP".AppDir/
-sed -i "s/^Icon=.*/Icon=$APP/g" ./"$APP".AppDir/*.desktop
-
-# FIND THE APPNAME
-APPNAME="$(cat ./"$APP".AppDir/*.desktop | grep '^Name=' | head -1 | cut -c 6- | sed 's/ /-/g')"
-
-# FIND THE ICON
-cp -r "$(find . -name *.png | grep -i "$APP" | sort | head -1)" ./"$APP".AppDir/"$APP".png 2> /dev/null
-cp -r "$(find . -name *.svg | grep -i "$APP" | sort | head -1)" ./"$APP".AppDir/"$APP".svg 2> /dev/null
-
-# IMPORT COMMON LINUX DIRECTORIES
-if test -d ./squashfs-root/etc; then cp -r ./squashfs-root/etc ./"$APP".AppDir/; fi
-if test -d ./squashfs-root/lib; then cp -r ./squashfs-root/lib* ./"$APP".AppDir/; fi
-if test -d ./squashfs-root/usr; then cp -r ./squashfs-root/usr ./"$APP".AppDir/; fi
-
-# APPRUN
-cat >> ./"$APP".AppDir/AppRun << 'EOF'
+cat >> ./"${SNAP_PACKAGE}".AppDir/AppRun << 'EOF'
 #!/bin/sh
 HERE="$(dirname "$(readlink -f "${0}")")"
-export UNION_PRELOAD=/:"${HERE}"
-export LD_LIBRARY_PATH="${HERE}"/usr/lib/:"${HERE}"/usr/lib/i386-linux-gnu/:"${HERE}"/usr/lib/x86_64-linux-gnu/:"${HERE}"/lib/:"${HERE}"/lib/i386-linux-gnu/:"${HERE}"/lib/x86_64-linux-gnu/:"${LD_LIBRARY_PATH}"
-export PATH="${HERE}"/usr/bin/:"${HERE}"/usr/sbin/:"${HERE}"/usr/games/:"${HERE}"/bin/:"${HERE}"/sbin/:"${PATH}"
-export PYTHONPATH="${HERE}"/usr/share/pyshared/:"${HERE}"/usr/lib/python*/:"${PYTHONPATH}"
-export PYTHONHOME="${HERE}"/usr/:"${HERE}"/usr/lib/python*/
-export XDG_DATA_DIRS="${HERE}"/usr/share/:"${XDG_DATA_DIRS}"
-export PERLLIB="${HERE}"/usr/share/perl5/:"${HERE}"/usr/lib/perl5/:"${PERLLIB}"
-export GSETTINGS_SCHEMA_DIR="${HERE}"/usr/share/glib-2.0/schemas/:"${GSETTINGS_SCHEMA_DIR}"
-export QT_PLUGIN_PATH="${HERE}"/usr/lib/qt4/plugins/:"${HERE}"/usr/lib/i386-linux-gnu/qt4/plugins/:"${HERE}"/usr/lib/x86_64-linux-gnu/qt4/plugins/:"${HERE}"/usr/lib32/qt4/plugins/:"${HERE}"/usr/lib64/qt4/plugins/:"${HERE}"/usr/lib/qt5/plugins/:"${HERE}"/usr/lib/i386-linux-gnu/qt5/plugins/:"${HERE}"/usr/lib/x86_64-linux-gnu/qt5/plugins/:"${HERE}"/usr/lib32/qt5/plugins/:"${HERE}"/usr/lib64/qt5/plugins/:"${QT_PLUGIN_PATH}"
-EXEC=$(grep -e '^Exec=.*' "${HERE}"/*.desktop | head -n 1 | cut -d "=" -f 2- | sed -e 's|%.||g')
-exec ${EXEC} "$@"
+export UNION_PRELOAD="${HERE}"
+exec "${HERE}"/skypeforlinux "$@"
 EOF
-chmod a+x ./"$APP".AppDir/AppRun
+chmod a+x ./"${SNAP_PACKAGE}".AppDir/AppRun
 
-# CONVERT THE APPDIR INTO AN APPIMAGE
-ARCH=x86_64 ./appimagetool --comp zstd --mksquashfs-opt -Xcompression-level --mksquashfs-opt 20 ./"$APP".AppDir
+ARCH=x86_64 ./appimagetool --comp zstd --mksquashfs-opt -Xcompression-level --mksquashfs-opt 20 ./"${SNAP_PACKAGE}".AppDir
 cd ..
-mv ./tmp/*.AppImage ./"$APPNAME"-"$VERSION"-x86_64.AppImage
+mv ./tmp/*.AppImage ./Skype-"$VERSION"-x86_64.AppImage
+
